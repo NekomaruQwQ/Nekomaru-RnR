@@ -11,9 +11,6 @@ version = "0.62.2"
 features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Threading",
-    "Win32_System_ProcessStatus",
     "Win32_UI_WindowsAndMessaging",
 ]
 
@@ -115,4 +112,3 @@ min_ident_chars = "allow"
 mod_module_files = "allow"
 multiple_inherent_impl = "allow"
 try_err ="allow"
-undocumented_unsafe_blocks = "allow"
