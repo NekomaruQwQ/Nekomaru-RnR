@@ -32,56 +32,41 @@ impl WindowInfo {
 
 pub struct App {
     windows: Vec<WindowInfo>,
-    last_refresh: Instant,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
-        if  self.last_refresh
-                .elapsed()
-                .as_secs_f32() >
-            Self::REFRESH_INTERVAL {
-            self.windows = Self::enumerate_windows();
-            self.last_refresh = Instant::now();
-        }
-        ctx.request_repaint_after_secs(Self::REFRESH_INTERVAL);
         CentralPanel::default().show(ctx, |ui| self.main_ui(ui));
     }
 }
 
 impl App {
-    const REFRESH_INTERVAL: f32 = 1.0;
-
     pub fn new() -> Self {
         Self {
             windows: Self::enumerate_windows(),
-            last_refresh: Instant::now(),
         }
     }
 
     fn enumerate_windows() -> Vec<WindowInfo> {
-        const EXCLUDED_WINDOW_NAMES: &[&str] = &[
-            "Microsoft Text Input Application",
-            "Windows Input Experience",
-        ];
         let start_time = Instant::now();
-        let out = enumerate_windows()
-            .into_iter()
-            .flatten()
-            .filter(|&hwnd| is_active(hwnd))
-            .flat_map(WindowInfo::from_hwnd)
-            .filter(|&WindowInfo { ref name, .. }| !{
-                name.is_empty() ||
-                EXCLUDED_WINDOW_NAMES.contains(&name.as_str())
-            })
-            .collect();
-        let time_elapsed_ms = start_time.elapsed().as_secs_f32() * 1000.0;
+        let out =
+            enumerate_windows()
+                .into_iter()
+                .flatten()
+                .filter(|&hwnd| is_active(hwnd))
+                .flat_map(WindowInfo::from_hwnd)
+                .filter(|info| !info.name.is_empty())
+                .collect();
+        let time_elapsed_ms =
+            start_time.elapsed().as_secs_f32() * 1000.0;
         println!("enumerate_windows() in {time_elapsed_ms:.2}ms");
         out
     }
 
     fn main_ui(&mut self, ui: &mut Ui) {
-
+        ui.add_sized((ui.available_width(), 16.0), Button::new("REFRESH"))
+            .clicked()
+            .then(|| self.windows = Self::enumerate_windows());
         ui.group(|ui| {
             ScrollArea::vertical()
                 .auto_shrink(false)
@@ -141,12 +126,14 @@ impl App {
                                 egui::Label::new(
                                     egui::RichText::new(format!("-{name}-  ")).weak()));
                             for size in arr {
-                                if ui.selectable_value(
+                                ui.selectable_value(
                                     &mut SIZE::default(),
                                     *size,
-                                    format!("{}{}{}", size.cx, CHAR_CROSS, size.cy)).clicked() {
-                                    let _ = resize_client(hwnd, size.cx, size.cy);
-                                }
+                                    format!("{}{}{}", size.cx, CHAR_CROSS, size.cy))
+                                    .clicked()
+                                    .then(|| {
+                                        let _ = resize_client(hwnd, size.cx, size.cy);
+                                    });
                             }
                             ui.label("");
                         }
