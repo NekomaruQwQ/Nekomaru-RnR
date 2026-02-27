@@ -7,11 +7,13 @@ fn main() -> eframe::Result {
         "Percents", eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size((360.0, 540.0))
+                .with_resizable(false)
                 .with_maximize_button(false),
             centered: true,
             ..Default::default()
         },
         Box::new(|cc| {
+            setup_fonts(cc);
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             cc.egui_ctx.style_mut(|style| {
                 style.interaction.selectable_labels = false;
@@ -19,3 +21,31 @@ fn main() -> eframe::Result {
             Ok(Box::new(app::App::new()))
         }))
 }
+
+fn setup_fonts(cc: &eframe::CreationContext<'_>) {
+    use std::fs;
+    use std::sync::Arc;
+    use egui::*;
+    use eframe::*;
+
+    // Load Microsoft YaHei UI for CJK character support.
+    // msyh.ttc index 1 = Microsoft YaHei UI (UI-optimized variant).
+    let font_bytes =
+        fs::read("C:/Windows/Fonts/msyh.ttc")
+            .expect("Failed to read Microsoft YaHei UI font (msyh.ttc)");
+    let mut font_data = FontData::from_owned(font_bytes);
+    font_data.index = 1;
+    let font_data = Arc::new(font_data);
+
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data
+        .insert("msyahei_ui".to_owned(), font_data);
+    // Primary proportional font — CJK + Latin.
+    fonts.families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push("msyahei_ui".to_owned());
+
+    cc.egui_ctx.set_fonts(fonts);
+}
+

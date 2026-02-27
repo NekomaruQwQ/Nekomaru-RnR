@@ -1,13 +1,20 @@
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt as _;
+use std::path::PathBuf;
+
+use euclid::default::Size2D;
+
 use windows::core::*;
 use windows::Win32::{
     Foundation::*,
     Graphics::Dwm::*,
     Graphics::Gdi::*,
+    System::Threading::*,
     UI::WindowsAndMessaging::*,
 };
 
 pub fn enumerate_windows() -> Result<Vec<HWND>> {
-    unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         // SAFETY: `lparam` carries a pointer to a stack-local `Vec<HWND>` created
         // in `enumerate_windows()` below. The pointer is non-null, properly aligned,
         // and valid for the entire synchronous duration of `EnumWindows`. No aliasing
@@ -22,22 +29,18 @@ pub fn enumerate_windows() -> Result<Vec<HWND>> {
     }
 
     let mut out = Vec::new();
+    let out_ptr = &raw mut out;
 
     // SAFETY: The callback has the correct `extern "system"` ABI and signature.
     // `LPARAM` carries a valid pointer to `out`, which lives on the stack and
     // outlives the synchronous `EnumWindows` call.
-    unsafe {
-        EnumWindows(
-            Some(enum_windows_proc),
-            LPARAM(&raw mut out as _))
-    }?;
-    Ok(out)
+    unsafe { EnumWindows(Some(enum_proc), LPARAM(out_ptr as _)) }.map(|()| out)
 }
 
 /// Checks whether a window is "cloaked" (hidden by DWM).
 /// Cloaked windows are technically visible but not shown to the user — common
 /// with UWP app placeholders and windows on other virtual desktops.
-pub fn is_hidden_by_dwm(hwnd: HWND) -> bool {
+pub fn is_cloaked(hwnd: HWND) -> bool {
     let mut cloaked: u32 = 0;
     let cloaked_ptr = &raw mut cloaked;
 
@@ -54,32 +57,78 @@ pub fn is_hidden_by_dwm(hwnd: HWND) -> bool {
     hr.is_ok() && cloaked != 0
 }
 
-pub fn get_client_size(hwnd: HWND) -> Result<SIZE> {
+/// Returns the client-area size `(width, height)` of a window, or `(0, 0)` on failure.
+///
+/// Uses `GetClientRect` because Windows Graphics Capture captures the client area,
+/// so these dimensions match the captured texture size.
+pub fn get_client_size(hwnd: HWND) -> Result<Size2D<u32>> {
     let mut rect = RECT::default();
-
-    // SAFETY: `rect` is a stack-local `RECT`; its raw pointer is valid for the
-    // duration of the call.
+    // SAFETY: `hwnd` is a valid enumerated handle; `&raw mut rect` is a valid local.
     unsafe { GetClientRect(hwnd, &raw mut rect) }?;
-    Ok(SIZE {
-        cx: rect.right  - rect.left,
-        cy: rect.bottom - rect.top,
-    })
+    Ok(Size2D::new(
+        (rect.right - rect.left) as u32,
+        (rect.bottom - rect.top) as u32))
 }
 
+/// Returns the window title as a `String`, or an empty string on failure.
+///
+/// Uses `GetWindowTextLengthW` and `GetWindowTextW` to retrieve the title as UTF-16,
+/// then converts it to a Rust `String`. The conversion is lossy and replaces invalid
+/// UTF-16 sequences with the Unicode replacement character, but this is acceptable
+/// for display purposes.
 pub fn get_window_text(hwnd: HWND) -> String {
     // SAFETY: Simple query with no pointer arguments beyond `hwnd`.
     let buf_len = unsafe { GetWindowTextLengthW(hwnd) } as usize + 1;
     let mut buf = vec![0u16; buf_len];
 
-    // SAFETY: `buf` is a `Vec<u16>` of length ≥ 1, passed as `&mut [u16]` —
-    // valid and large enough per the preceding `GetWindowTextLengthW` result.
-    let _ = unsafe { GetWindowTextW(hwnd, &mut buf) };
-    if let Some(pos) = buf.iter().position(|&c| c == 0) {
-        buf.truncate(pos);
-    }
-    String::from_utf16_lossy(&buf)
+    // SAFETY: `hwnd` is a valid enumerated handle; `&mut buf` is a valid
+    // buffer of `u16`, and `GetWindowTextW` writes at most `buf_len`
+    // elements including the null terminator.
+    let len = unsafe { GetWindowTextW(hwnd, &mut buf) } as usize;
+    OsString::from_wide(&buf[..len])
+        .to_string_lossy()
+        .into_owned()
 }
 
+/// Returns the process ID of the window's owning process, or `0` on failure
+/// (e.g. elevated process).
+pub fn get_process_id(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    // SAFETY: `hwnd` is a valid enumerated handle; `&raw mut pid` is a valid local.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)); }
+    pid
+}
+
+/// Returns the full executable path of a process given its ID, or `None` on failure
+/// (e.g. elevated process, system process, or process that has already exited).
+pub fn get_executable_path(pid: u32) -> Option<PathBuf> {
+    // SAFETY: `pid` is a non-zero process ID obtained from `GetWindowThreadProcessId`.
+    // `OpenProcess` with `QUERY_LIMITED_INFORMATION` is a low-privilege operation.
+    // `buf` is a stack-allocated 260-element u16 array (MAX_PATH). `CloseHandle` is
+    // always called on the opened handle before returning.
+    #[expect(clippy::multiple_unsafe_ops_per_block, reason = "Windows API calls")]
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        if handle.is_invalid() {
+            None?;
+        }
+
+        let mut buf = [0u16; 260];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &raw mut len);
+        let _ = CloseHandle(handle);
+        ok.ok()?;
+
+        Some(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+    }
+}
+
+/// Returns the [`MONITORINFO`] of the monitor that a window is currently on,
+/// or `None` if it cannot be determined.
 pub fn get_monitor_info_from_window(hwnd: HWND) -> Option<MONITORINFO> {
     // SAFETY: `MONITOR_DEFAULTTOPRIMARY` guarantees a valid `HMONITOR` is
     // returned, falling back to the primary monitor.

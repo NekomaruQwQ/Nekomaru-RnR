@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use euclid::default::Size2D;
+
 use windows::core::*;
 use windows::Win32::{
     Foundation::*,
@@ -11,30 +15,75 @@ pub const RESOLUTION_GROUPS: &[(&str, &[SIZE])] = &[
 ];
 
 pub const RESOLUTIONS_16_10: &[SIZE] = &[
-    SIZE { cx:  480, cy:  300 },
-    SIZE { cx:  640, cy:  400 },
-    SIZE { cx:  800, cy:  500 },
-    SIZE { cx:  960, cy:  600 },
-    SIZE { cx: 1280, cy:  800 },
-    SIZE { cx: 1440, cy:  900 },
-    SIZE { cx: 1680, cy: 1050 },
-    SIZE { cx: 1920, cy: 1200 },
-    SIZE { cx: 2560, cy: 1600 },
-    SIZE { cx: 2880, cy: 1800 },
     SIZE { cx: 3840, cy: 2400 },
+    SIZE { cx: 2880, cy: 1800 },
+    SIZE { cx: 2560, cy: 1600 },
+    SIZE { cx: 1920, cy: 1200 },
+    SIZE { cx: 1680, cy: 1050 },
+    SIZE { cx: 1440, cy:  900 },
+    SIZE { cx: 1280, cy:  800 },
+    SIZE { cx:  960, cy:  600 },
+    SIZE { cx:  800, cy:  500 },
+    SIZE { cx:  640, cy:  400 },
+    SIZE { cx:  480, cy:  300 },
 ];
 
-pub fn is_known_resolution(size: SIZE) -> bool {
+pub fn is_known_resolution(width: u32, height: u32) -> bool {
     RESOLUTION_GROUPS
         .iter()
         .flat_map(|&(_, arr)| arr)
-        .any(|&item| item == size)
+        .any(|&item| {
+            item.cx == width as i32 &&
+            item.cy == height as i32})
 }
 
 pub const fn get_center_of_rect(rect: &RECT) -> POINT {
     POINT {
         x: rect.left + (rect.right  - rect.left) / 2,
         y: rect.top  + (rect.bottom - rect.top ) / 2,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowInfo {
+    /// Window handle.
+    pub hwnd: HWND,
+    /// Window title (lossy UTF-16 → UTF-8 conversion).
+    pub window_text: String,
+    /// Client-area size in physical pixels, or `None` if unavailable.
+    /// Requires the calling process to be per-monitor DPI aware V2; otherwise
+    /// Windows virtualizes the value to logical pixels.
+    pub client_size: Option<Size2D<u32>>,
+    /// Whether the window is centered on the screen, or `None` if it cannot be
+    /// determined (e.g. due to missing monitor info or window rect).
+    pub is_centered: Option<bool>,
+    /// Full executable path, or empty if inaccessible.
+    pub executable_path: Option<PathBuf>,
+}
+
+impl WindowInfo {
+    pub fn from_hwnd(hwnd: HWND) -> Self {
+        let window_text =
+            get_window_text(hwnd);
+        let client_size =
+            get_client_size(hwnd).ok();
+        let is_centered =
+            is_centered(hwnd);
+        let process_id =
+            get_process_id(hwnd);
+        let executable_path =
+            get_executable_path(process_id);
+        Self {
+            hwnd,
+            window_text,
+            client_size,
+            is_centered,
+            executable_path,
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        *self = Self::from_hwnd(self.hwnd);
     }
 }
 
@@ -57,7 +106,7 @@ pub fn is_active(hwnd: HWND) -> bool {
             .is_invalid()
         // Exclude cloaked windows, which are technically visible but not shown to
         // the user.
-        && !is_hidden_by_dwm(hwnd)
+        && !is_cloaked(hwnd)
     }
 }
 
