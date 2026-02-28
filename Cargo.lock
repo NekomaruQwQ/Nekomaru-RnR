@@ -1474,18 +1474,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "percents"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "euclid",
- "itertools",
- "win32-version-info",
- "windows",
-]
-
-[[package]]
 name = "pin-project"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1647,6 +1635,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce70a74e890531977d37e532c34d45e9055d2409ed08ddba14529471ed0be16"
 dependencies = [
  "bitflags 2.11.0",
+]
+
+[[package]]
+name = "rnr"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "euclid",
+ "itertools",
+ "win32-version-info",
+ "windows",
 ]
 
 [[package]]

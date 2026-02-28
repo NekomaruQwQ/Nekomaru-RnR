@@ -4,7 +4,8 @@ mod native;
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "Percents", eframe::NativeOptions {
+        "Nekomaru RnR",
+        eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size((360.0, 540.0))
                 .with_resizable(false)
