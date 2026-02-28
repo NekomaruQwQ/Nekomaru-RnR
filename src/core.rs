@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use euclid::default::Size2D;
+use win32_version_info::VersionInfo;
 
 use windows::core::*;
 use windows::Win32::{
@@ -12,7 +13,7 @@ use crate::native::*;
 
 /// The visual state of a window — keeps Win32 constants (`SW_*`) out of the
 /// domain layer and provides clean pattern matching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowState {
     Normal,
     Maximized,
@@ -69,7 +70,31 @@ pub const fn get_center_of_rect(rect: &RECT) -> POINT {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+fn get_display_name_for_executable(path: &PathBuf)
+    -> Option<String> {
+    VersionInfo::from_file(path)
+        .map(|info| info.file_description)
+        .ok()
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+}
+
+pub struct ExecutableInfo {
+    pub display_path: String,
+    pub display_name: Option<String>,
+}
+
+impl ExecutableInfo {
+    pub fn from_path(path: &PathBuf) -> Self {
+        Self {
+            display_path: path.to_string_lossy().into_owned(),
+            display_name: get_display_name_for_executable(path),
+        }
+    }
+}
+
 pub struct WindowInfo {
     /// Window handle.
     pub hwnd: HWND,
@@ -116,10 +141,6 @@ impl WindowInfo {
             is_centered,
             executable_path,
         }
-    }
-
-    pub fn refresh(&mut self) {
-        *self = Self::from_hwnd(self.hwnd);
     }
 }
 
