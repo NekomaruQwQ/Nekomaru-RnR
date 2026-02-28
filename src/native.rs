@@ -145,6 +145,68 @@ pub fn get_monitor_info_from_window(hwnd: HWND) -> Option<MONITORINFO> {
         .then_some(monitor_info)
 }
 
+/// Returns the [`WINDOWPLACEMENT`] of a window, which includes the restored
+/// position (`rcNormalPosition`) and the current show state (`showCmd`).
+pub fn get_window_placement(hwnd: HWND) -> Result<WINDOWPLACEMENT> {
+    let mut placement = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `placement` is stack-local with `length` correctly initialized;
+    // its raw pointer is valid for the duration of the call.
+    unsafe { GetWindowPlacement(hwnd, &raw mut placement) }?;
+    Ok(placement)
+}
+
+/// Sets the [`WINDOWPLACEMENT`] of a window. This updates the restored
+/// position (`rcNormalPosition`) and show state (`showCmd`) without forcing
+/// the window to change its current visual state when `showCmd` matches
+/// the current state.
+pub fn set_window_placement(hwnd: HWND, placement: &WINDOWPLACEMENT) -> Result<()> {
+    // SAFETY: `placement` is a valid reference with `length` correctly initialized;
+    // `SetWindowPlacement` reads from the pointer without modifying it.
+    unsafe { SetWindowPlacement(hwnd, placement) }
+}
+
+/// Computes the normal-state window frame (border/title insets) for `hwnd`
+/// by querying its window style and calling `AdjustWindowRectEx` on a zero rect.
+///
+/// This gives the correct frame regardless of whether the window is currently
+/// maximized or minimized, because it derives the frame from the window's
+/// *style* rather than from its current geometry.
+pub fn get_normal_frame(hwnd: HWND) -> Result<RECT> {
+    // SAFETY: `GetWindowLongW` is a simple query on `hwnd` with no pointer arguments.
+    #[expect(clippy::multiple_unsafe_ops_per_block, reason = "Windows API calls")]
+    let (style, ex_style) = unsafe {(
+        WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32),
+        WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32),
+    )};
+    // SAFETY: `GetMenu` is a simple query returning a menu handle (or null).
+    let has_menu = unsafe { !GetMenu(hwnd).is_invalid() };
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is stack-local; its raw pointer is valid for the call.
+    // `style`, `ex_style`, and `has_menu` are derived from prior successful queries.
+    unsafe { AdjustWindowRectEx(&raw mut rect, style, has_menu, ex_style) }?;
+    Ok(rect)
+}
+
+/// Returns the restored client size of a window by subtracting the normal-state
+/// frame from `rcNormalPosition` in the window's [`WINDOWPLACEMENT`].
+///
+/// For normal windows this matches `GetClientRect`; for maximized/minimized
+/// windows it returns the size the client area *will* have when the window is
+/// restored.
+pub fn get_restored_client_size(hwnd: HWND) -> Result<Size2D<u32>> {
+    let placement = get_window_placement(hwnd)?;
+    let frame = get_normal_frame(hwnd)?;
+    let rc = placement.rcNormalPosition;
+    // `frame` has negative left/top and positive right/bottom values representing
+    // the frame insets. Subtracting them from the normal rect gives the client area.
+    let width  = (rc.right - rc.left) - (frame.right - frame.left);
+    let height = (rc.bottom - rc.top) - (frame.bottom - frame.top);
+    Ok(Size2D::new(width as u32, height as u32))
+}
+
 pub fn resize_client(hwnd: HWND, width: i32, height: i32) -> Result<()> {
     let mut window_rect = RECT::default();
     let mut client_rect = RECT::default();

@@ -144,6 +144,13 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(CHAR_WINDOW.to_string());
             ui.add(Label::new(&window.window_text).truncate());
+            match window.state {
+                WindowState::Maximized =>
+                    { ui.add(Label::new(RichText::new("[max]").weak())); }
+                WindowState::Minimized =>
+                    { ui.add(Label::new(RichText::new("[min]").weak())); }
+                WindowState::Normal => {}
+            }
         });
 
         ui.horizontal(|ui| {
@@ -153,7 +160,13 @@ impl App {
                 ui.add_sized((80.0, 16.0), Button::new("CENTER"))
                     .clicked()
                     .then(|| {
-                        if let Err(err) = center_to_screen(window.hwnd) {
+                        let result = match window.state {
+                            WindowState::Normal =>
+                                center_to_screen(window.hwnd),
+                            WindowState::Maximized | WindowState::Minimized =>
+                                center_restored_to_screen(window.hwnd),
+                        };
+                        if let Err(err) = result {
                             eprintln!("failed to center window: {err}");
                         } else {
                             window.refresh();
@@ -192,7 +205,15 @@ impl App {
                                 format!("{}{}{}", resolution.cx, CHAR_CROSS, resolution.cy))
                                 .clicked()
                                 .then(|| {
-                                    let _ = resize_client(window.hwnd, resolution.cx, resolution.cy);
+                                    let result = match window.state {
+                                        WindowState::Normal =>
+                                            resize_client(window.hwnd, resolution.cx, resolution.cy),
+                                        WindowState::Maximized | WindowState::Minimized =>
+                                            resize_restored_client(window.hwnd, resolution.cx, resolution.cy),
+                                    };
+                                    if let Err(err) = result {
+                                        eprintln!("failed to resize window: {err}");
+                                    }
                                     window.refresh();
                                 });
                         }

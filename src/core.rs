@@ -10,6 +10,31 @@ use windows::Win32::{
 
 use crate::native::*;
 
+/// The visual state of a window — keeps Win32 constants (`SW_*`) out of the
+/// domain layer and provides clean pattern matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowState {
+    Normal,
+    Maximized,
+    Minimized,
+}
+
+/// Returns the current visual state of a window.
+pub fn get_window_state(hwnd: HWND) -> WindowState {
+    // SAFETY: `IsIconic` and `IsZoomed` are simple boolean queries on `hwnd`
+    // with no pointer arguments.
+    #[expect(clippy::multiple_unsafe_ops_per_block, reason = "Windows API calls")]
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            WindowState::Minimized
+        } else if IsZoomed(hwnd).as_bool() {
+            WindowState::Maximized
+        } else {
+            WindowState::Normal
+        }
+    }
+}
+
 pub const RESOLUTION_GROUPS: &[(&str, &[SIZE])] = &[
     ("16:10", RESOLUTIONS_16_10),
 ];
@@ -50,12 +75,16 @@ pub struct WindowInfo {
     pub hwnd: HWND,
     /// Window title (lossy UTF-16 → UTF-8 conversion).
     pub window_text: String,
-    /// Client-area size in physical pixels, or `None` if unavailable.
-    /// Requires the calling process to be per-monitor DPI aware V2; otherwise
-    /// Windows virtualizes the value to logical pixels.
+    /// Current visual state of the window (normal, maximized, or minimized).
+    pub state: WindowState,
+    /// "Controllable" client-area size in physical pixels, or `None` if unavailable.
+    /// For normal windows this is the live client rect; for maximized/minimized
+    /// windows it is the *restored* client size (the size the window will have
+    /// when un-maximized/un-minimized).
     pub client_size: Option<Size2D<u32>>,
     /// Whether the window is centered on the screen, or `None` if it cannot be
     /// determined (e.g. due to missing monitor info or window rect).
+    /// For maximized/minimized windows this checks the *restored* position.
     pub is_centered: Option<bool>,
     /// Full executable path, or empty if inaccessible.
     pub executable_path: Option<PathBuf>,
@@ -65,10 +94,16 @@ impl WindowInfo {
     pub fn from_hwnd(hwnd: HWND) -> Self {
         let window_text =
             get_window_text(hwnd);
-        let client_size =
-            get_client_size(hwnd).ok();
-        let is_centered =
-            is_centered(hwnd);
+        let state =
+            get_window_state(hwnd);
+        let (client_size, is_centered) = match state {
+            WindowState::Normal => (
+                get_client_size(hwnd).ok(),
+                is_centered(hwnd)),
+            WindowState::Maximized | WindowState::Minimized => (
+                get_restored_client_size(hwnd).ok(),
+                is_restored_centered(hwnd)),
+        };
         let process_id =
             get_process_id(hwnd);
         let executable_path =
@@ -76,6 +111,7 @@ impl WindowInfo {
         Self {
             hwnd,
             window_text,
+            state,
             client_size,
             is_centered,
             executable_path,
@@ -89,16 +125,15 @@ impl WindowInfo {
 
 /// Checks if a window is active and should be included in the list of windows
 /// that can be manipulated by the user. This function filters out windows that
-/// are not visible, minimized, maximized, owned by other windows, or cloaked by
-/// the Desktop Window Manager (DWM).
+/// are not visible, owned by other windows, or cloaked by the Desktop Window
+/// Manager (DWM). Maximized and minimized windows are included — their
+/// restored geometry can be inspected and modified via `WINDOWPLACEMENT`.
 pub fn is_active(hwnd: HWND) -> bool {
-    // SAFETY: `IsWindowVisible`, `IsIconic`, `IsZoomed`, and `GetWindow` are
-    // simple boolean/handle queries on `hwnd` with no pointer arguments.
+    // SAFETY: `IsWindowVisible` and `GetWindow` are simple boolean/handle
+    // queries on `hwnd` with no pointer arguments.
     #[expect(clippy::multiple_unsafe_ops_per_block, reason = "Windows API calls")]
     unsafe {
         IsWindowVisible(hwnd).as_bool()
-        && !IsIconic(hwnd).as_bool()
-        && !IsZoomed(hwnd).as_bool()
         // Exclude owned windows, which are typically tooltips, popups, and other
         // auxiliary windows that shouldn't be treated as main application windows.
         && GetWindow(hwnd, GW_OWNER)
@@ -150,4 +185,57 @@ pub fn center_to_screen(hwnd: HWND) -> Result<()> {
             SWP_NOSIZE |
             SWP_NOZORDER)
     }
+}
+
+/// Checks whether the *restored* position (`rcNormalPosition`) of a maximized
+/// or minimized window is centered on the monitor work area.
+pub fn is_restored_centered(hwnd: HWND) -> Option<bool> {
+    let monitor_info = get_monitor_info_from_window(hwnd)?;
+    let placement = get_window_placement(hwnd).ok()?;
+    let screen_center = get_center_of_rect(&monitor_info.rcWork);
+    let window_center = get_center_of_rect(&placement.rcNormalPosition);
+    Some(window_center == screen_center)
+}
+
+/// Centers the *restored* position (`rcNormalPosition`) of a maximized or
+/// minimized window on the monitor work area via `SetWindowPlacement`,
+/// without changing the window's current show state.
+pub fn center_restored_to_screen(hwnd: HWND) -> Result<()> {
+    let Some(monitor_info) = get_monitor_info_from_window(hwnd) else {
+        return Err(Error::empty());
+    };
+    let mut placement = get_window_placement(hwnd)?;
+    let rc = &placement.rcNormalPosition;
+    let w = rc.right - rc.left;
+    let h = rc.bottom - rc.top;
+    let work = &monitor_info.rcWork;
+    placement.rcNormalPosition = RECT {
+        left:   work.left + (work.right  - work.left - w) / 2,
+        top:    work.top  + (work.bottom - work.top  - h) / 2,
+        right:  work.left + (work.right  - work.left - w) / 2 + w,
+        bottom: work.top  + (work.bottom - work.top  - h) / 2 + h,
+    };
+    set_window_placement(hwnd, &placement)
+}
+
+/// Resizes the *restored* client area of a maximized or minimized window to
+/// `(width, height)` and re-centers the result around the old window center,
+/// without changing the window's current show state.
+pub fn resize_restored_client(hwnd: HWND, width: i32, height: i32) -> Result<()> {
+    let mut placement = get_window_placement(hwnd)?;
+    let frame = get_normal_frame(hwnd)?;
+    let old_rc = &placement.rcNormalPosition;
+    let old_center = get_center_of_rect(old_rc);
+
+    // Desired window size = desired client size + frame insets.
+    let new_w = width  + (frame.right - frame.left);
+    let new_h = height + (frame.bottom - frame.top);
+
+    placement.rcNormalPosition = RECT {
+        left:   old_center.x - new_w / 2,
+        top:    old_center.y - new_h / 2,
+        right:  old_center.x - new_w / 2 + new_w,
+        bottom: old_center.y - new_h / 2 + new_h,
+    };
+    set_window_placement(hwnd, &placement)
 }
